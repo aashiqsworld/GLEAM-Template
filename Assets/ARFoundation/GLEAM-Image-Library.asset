@@ -1,0 +1,27 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 848409ee8ba454f42a5ddff137688a27, type: 3}
+  m_Name: GLEAM-Image-Library
+  m_EditorClassIdentifier: 
+  m_GuidLow: 5557256103980348577
+  m_GuidHigh: 18364198837836606638
+  m_Images:
+  - m_SerializedGuid:
+      m_GuidLow: 5243395815399599486
+      m_GuidHigh: 3331528979247425461
+    m_SerializedTextureGuid:
+      m_GuidLow: 1505295599269838287
+      m_GuidHigh: 17422933740649932297
+    m_Size: {x: 0.297, y: 0.23754199}
+    m_SpecifySize: 1
+    m_Name: Kitchen_Marker
+    m_Texture: {fileID: 0}

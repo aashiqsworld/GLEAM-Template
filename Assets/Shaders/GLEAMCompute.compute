@@ -1,0 +1,308 @@
+﻿
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel RayCast
+
+// RayTracer inputs
+float4x4 _CameraToWorld;
+float4x4 _CameraInverseProjection;
+float2 _CameraDimensions;
+
+static const float PI = 3.14159265f;
+static const float EPSILON = 1e-8;
+
+float2 _Pixel;
+
+// GLEAM inputs
+RWTexture2D<float4> _SampleTexture;
+float3 _ProbeScreenPosition;
+float3 _ProbePosition;
+float3 _CameraPosition;
+float _ProbeRadius;
+int _ProbeSampleSize;
+int _LimSamples;
+int _FaceSideLength;
+
+// Outputs
+RWTexture3D<float4> _Cubemap;
+RWTexture2D<float4> _DebugTexture;
+
+// private variables
+RWTexture3D<float4> _SumsList;
+RWTexture3D<float> _WeightsList;
+
+
+// GLEAM declarations
+struct Sample
+{
+    float u;
+    float v;
+    float r;
+    float g;
+    float b;
+    float a;
+    int cubemapFace;
+};
+
+RWStructuredBuffer<Sample> samples;
+int _SampleCount;
+
+Sample CreateSample(float2 uv, float4 pixel, int cubemapFace)
+{
+    Sample s;
+    s.u = uv.x;
+    s.v = uv.y;
+    s.r = pixel.r;
+    s.g = pixel.g;
+    s.b = pixel.b;
+    s.a = pixel.a;
+    s.cubemapFace = cubemapFace;
+    return s;
+}
+
+
+// Raytracing declarations
+struct Ray
+{
+    float3 origin;
+    float3 direction;
+};
+
+struct RayHit
+{
+    float3 position;
+    float distance;
+    float3 normal;
+};
+
+struct Sphere
+{
+    float3 position;
+    float radius;
+};
+
+
+
+
+
+// Raytracing methods
+Ray CreateRay(float3 origin, float3 direction)
+{
+    Ray ray;
+    ray.origin = origin;
+    ray.direction = direction;
+    return ray;
+}
+
+Ray CreateCameraRay(float2 uv)
+{
+    // Transform the camera origin to world space
+    float3 origin = mul(_CameraToWorld, float4(0.0f, 0.0f, 0.0f, 1.0f)).xyz;
+    
+    // Invert the perspective projection of the view-space position
+    float3 direction = mul(_CameraInverseProjection, float4(uv, 0.0f, 1.0f)).xyz;
+    // Transform the direction from camera to world space and normalize
+    direction = mul(_CameraToWorld, float4(direction, 0.0f)).xyz;
+    direction = normalize(direction);
+
+    return CreateRay(origin, direction);
+}
+
+RayHit CreateRayHit()
+{
+    RayHit hit;
+    hit.position = float3(0.0f, 0.0f, 0.0f);
+    hit.distance = 1.#INF;
+    hit.normal = float3(0.0f, 0.0f, 0.0f);
+    return hit;
+}
+
+void IntersectSphere(Ray ray, inout RayHit bestHit, Sphere sphere)
+{
+    // Calculate distance along the ray where the sphere is intersected
+    float3 d = ray.origin - sphere.position;
+    float p1 = -dot(ray.direction, d);
+    float p2sqr = p1 * p1 - dot(d, d) + sphere.radius * sphere.radius;
+    if (p2sqr < 0)
+        return;
+    float p2 = sqrt(p2sqr);
+    float t = p1 - p2 > 0 ? p1 - p2 : p1 + p2;
+    if (any(t > 0 && t < bestHit.distance))
+    {
+        bestHit.distance = t;
+        bestHit.position = ray.origin + t * ray.direction;
+        bestHit.normal = normalize(bestHit.position - sphere.position);
+    }
+}
+
+RayHit Trace(Ray ray)
+{
+	RayHit bestHit = CreateRayHit();
+	uint count, stride, i;
+
+    Sphere probe;
+    probe.position = _ProbePosition;
+    probe.radius = _ProbeRadius;
+
+    IntersectSphere(ray, bestHit, probe);
+
+	return bestHit;
+}
+
+float magnitude(float3 v)
+{
+    return sqrt(pow(v.x, 2) + pow(v.y, 2) + pow(v.z, 2));
+}
+
+float calcDeviations(float3 dir1, float3 dir2)
+{
+    return degrees(acos(dir1.x * dir2.x + dir1.y * dir2.y + dir1.z * dir2.z) / (magnitude(dir1) * magnitude(dir2)));
+}
+
+
+[numthreads(4,4,1)]
+void RayCast (uint3 id : SV_DispatchThreadID)
+{
+    float3 outDirection;
+    float3 pointOnCube;
+    float dev;
+    int face;
+    int branchInteger;
+
+    float4 pixel;
+    float u, v;
+    /*
+        1 = +X
+        2 = -X
+        3 = +Y
+        4 = -Y
+        5 = +Z
+        6 = -Z
+    */
+
+    // GenerateRadianceSamples() ---------------
+    // iterate through each pixel 
+
+    float2 uv = float2(( _ProbeScreenPosition.xy - (float2(_ProbeSampleSize, _ProbeSampleSize) / 2) + id.xy + _CameraDimensions * 2.0f - 1.0f));
+
+    Ray ray = CreateCameraRay(uv);
+    RayHit hit = Trace(ray);
+    // _DebugTexture[id.xy] = float4(hit.normal, 1);
+
+    // BRANCHING CODE
+    // if it collides with probe....
+
+    pixel = _DebugTexture[id.xy];
+
+    outDirection = reflect(ray.direction, hit.normal);
+
+
+    pointOnCube = float3(
+        outDirection.x / max(max(abs(outDirection.x), abs(outDirection.y)), abs(outDirection.z)), outDirection.y / max(max(abs(outDirection.x), abs(outDirection.y)), abs(outDirection.z)), outDirection.z / max(max(abs(outDirection.x), abs(outDirection.y)), abs(outDirection.z)));
+
+    dev = calcDeviations(-outDirection, _ProbePosition - _CameraPosition);
+
+    face = 0;
+    u = 0;
+    v = 0;
+
+    branchInteger = (pointOnCube.x >= 0.99f ? 1 : 0);
+    face = branchInteger;
+    u += ((-(pointOnCube.z) + 1) / 2) * branchInteger;
+    v += (((pointOnCube.z) + 1) / 2) * branchInteger;
+
+    branchInteger = (face == 0 && pointOnCube.x <= -0.99f ? 2 : 0);
+    face += branchInteger;
+    u += (((pointOnCube.z) + 1) / 2) * branchInteger / 2;
+    v += (((pointOnCube.y) + 1) / 2) * branchInteger / 2;
+
+    branchInteger = (face == 0 && pointOnCube.y >= 0.99f ? 3 : 0);
+    face += branchInteger;
+    u += (((pointOnCube.x) + 1) / 2) * branchInteger / 3;
+    v += ((-(pointOnCube.z) + 1) / 2) * branchInteger / 3;
+
+    branchInteger = (face == 0 && pointOnCube.y <= -0.99f ? 4 : 0);
+    face += branchInteger;
+    u += (((pointOnCube.x) + 1) / 2) * branchInteger / 4;
+    v += (((pointOnCube.z) + 1) / 2) * branchInteger / 4;
+
+    branchInteger = (face == 0 && pointOnCube.z >= 0.99f ? 5 : 0);
+    face += branchInteger;
+    u += (((pointOnCube.x) + 1) / 2) * branchInteger / 5;
+    v += (((pointOnCube.y) + 1) / 2) * branchInteger / 5;
+
+    branchInteger = (face == 0 && pointOnCube.z <= -0.99f ? 6 : 0);
+    face += branchInteger;
+    u += ((-(pointOnCube.x) + 1) / 2) * branchInteger / 6;
+    v += (((pointOnCube.y) + 1) / 2) * branchInteger / 6;
+    
+    face = (face == 0 || face > 6 ? 1 : face);
+
+    pixel.a = (1 - ((dev / 180.0f) * (dev / 180.0f))) * 255;
+    Sample samp = CreateSample(float2(u, v), pixel, face);
+    
+    // samples[((id.y + j) * 200) + (id.x + i)] = samp;
+    samples[(id.y * 200) + id.x] = samp;
+
+    // ComposeCubemap() -----------
+
+    // 4
+    int index = (id.y) * _ProbeSampleSize + (id.x);
+    float s = samples[index].u * _ProbeSampleSize;
+    float t = samples[index].v * _ProbeSampleSize;
+    int faceIndex = samples[index].cubemapFace;
+
+    _SumsList[int3(0, 0, 0)] = float4(1, 1, 1, 1);
+
+    s = 3;
+    t = 3;
+    for(int jNbd = 0; jNbd < s && jNbd < _ProbeSampleSize; jNbd++)
+    {
+        for(int kNbd = 0; kNbd < t && kNbd < _ProbeSampleSize; kNbd++)
+        {
+            
+            float weight = 0.01f / (abs(jNbd - s) + abs(kNbd - t) + 0.01f);
+            pixel = float4(samples[index].r, samples[index].g, samples[index].b, samples[index].a) * weight;
+
+
+
+            _SumsList[int3(jNbd, kNbd, faceIndex-1)] = pixel;
+            _WeightsList[int3(jNbd, kNbd, faceIndex-1)] = weight;
+        }
+    }
+
+    
+    
+    // calcPixelVals()
+    
+    float4 faceColorAvgs[] = {  float4(0, 0, 0, 0),
+                                float4(0, 0, 0, 0),
+                                float4(0, 0, 0, 0),
+                                float4(0, 0, 0, 0),
+                                float4(0, 0, 0, 0),
+                                float4(0, 0, 0, 0)};
+
+    int faceColorCount = 0;
+    float4 avgFaceColor = float4(0, 0, 0, 0);
+
+    int3 nIdx;
+    int q;
+
+    // iterate over each cubemap face
+    for(int a = 0; a < 6; a++)
+    {
+        // iterate over each pixel and do sum/weight
+        _SumsList[int3(id.x, id.y, a)] = _SumsList[int3(id.x, id.y, a)] / _WeightsList[int3(id.x, id.y, a)];
+
+        nIdx = int3(id.x, id.y, a);
+        q = _ProbeSampleSize - id.y - 1;
+        
+        _Cubemap[int3(id.x, q, a)] = _SumsList[nIdx] * 1;
+
+        // Fill Holes
+        // float4 avgFaceColor
+        
+        
+    }
+
+    _DebugTexture[id.xy] = _Cubemap[int3(id.xy, 1)];
+}
